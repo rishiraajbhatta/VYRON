@@ -15,6 +15,7 @@ const navigation = [
 ];
 
 type SampleType = "BENIGN" | "MALICIOUS";
+type SimulationMode = "dataset_replay" | "balanced_demo";
 
 type DatasetSample = {
   success: boolean;
@@ -46,6 +47,8 @@ type SimulationEvent = {
   matches_dataset: boolean;
   detection_model: string;
   sample_source: string;
+  simulation_mode?: SimulationMode;
+  simulation_mode_label?: string;
 };
 
 type SimulationStatus = {
@@ -54,6 +57,9 @@ type SimulationStatus = {
   interval_seconds: number;
   stored_events: number;
   detection_model: string;
+  mode?: SimulationMode;
+  mode_label?: string;
+  available_modes?: SimulationMode[];
 };
 
 function VyronLogo({ large = false }: { large?: boolean }) {
@@ -273,6 +279,8 @@ export default function Home() {
 
   const [simulationRunning, setSimulationRunning] = useState(false);
   const [simulationLoading, setSimulationLoading] = useState(false);
+  const [simulationMode, setSimulationMode] =
+    useState<SimulationMode>("dataset_replay");
 
   const [simulationStatus, setSimulationStatus] =
     useState<SimulationStatus | null>(null);
@@ -366,6 +374,14 @@ export default function Home() {
 
         setSimulationStatus(status);
         setSimulationRunning(status.running);
+
+        // Keep the selector in sync if a simulation is already running.
+        if (
+          status.running &&
+          (status.mode === "dataset_replay" || status.mode === "balanced_demo")
+        ) {
+          setSimulationMode(status.mode);
+        }
 
         const newEvents: SimulationEvent[] = eventResult.events || [];
 
@@ -553,6 +569,7 @@ export default function Home() {
         },
         body: JSON.stringify({
           interval_seconds: 1,
+          mode: simulationMode,
         }),
       });
 
@@ -565,6 +582,16 @@ export default function Home() {
       }
 
       setSimulationRunning(true);
+      setSimulationStatus((previous) => ({
+        running: true,
+        total_events: previous?.total_events ?? 0,
+        interval_seconds: 1,
+        stored_events: previous?.stored_events ?? 0,
+        detection_model: previous?.detection_model ?? "XGBoost",
+        mode: simulationMode,
+        mode_label:
+          simulationMode === "balanced_demo" ? "Balanced Demo" : "Dataset Replay",
+      }));
     } catch (err) {
       setSimulationError(
         err instanceof Error
@@ -890,8 +917,8 @@ export default function Home() {
         {/* CONTROL PANEL */}
 
         <div className="rounded-2xl border border-white/10 bg-[#111327]/90 p-6 md:p-8">
-          <div className="flex flex-wrap items-center justify-between gap-6">
-            <div>
+          <div className="flex flex-wrap items-end justify-between gap-6">
+            <div className="min-w-[260px] flex-1">
               <p className="text-[10px] tracking-[0.2em] text-violet-300">
                 SIMULATION CONTROL CENTER
               </p>
@@ -903,6 +930,34 @@ export default function Home() {
               <p className="mt-2 text-xs text-slate-400">
                 CICIoT2023 · XGBoost · 38 Features · 1-second interval
               </p>
+
+              <div className="mt-6 max-w-xl">
+                <label
+                  htmlFor="simulation-mode"
+                  className="mb-2 block text-[9px] font-semibold tracking-[0.18em] text-slate-300"
+                >
+                  SELECT SIMULATION MODE
+                </label>
+
+                <select
+                  id="simulation-mode"
+                  value={simulationMode}
+                  onChange={(event) =>
+                    setSimulationMode(event.target.value as SimulationMode)
+                  }
+                  disabled={simulationRunning || simulationLoading}
+                  className="w-full rounded-xl border border-violet-400/25 bg-[#090d1d] px-4 py-3 text-sm text-white outline-none transition focus:border-violet-400 disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-sm"
+                >
+                  <option value="dataset_replay">Dataset Replay</option>
+                  <option value="balanced_demo">Balanced Demo</option>
+                </select>
+
+                <p className="mt-3 max-w-lg text-[11px] leading-5 text-slate-400">
+                  {simulationMode === "dataset_replay"
+                    ? "Replays records using the original class distribution of the held-out CICIoT2023 test dataset. The stream may contain mostly malicious records."
+                    : "Alternates between genuine benign and malicious records from the held-out test dataset for a clearer demonstration. Model predictions are not forced, so mismatches can occur."}
+                </p>
+              </div>
             </div>
 
             <div className="flex flex-wrap gap-3">
@@ -928,6 +983,22 @@ export default function Home() {
                 ■ STOP SIMULATION
               </button>
             </div>
+          </div>
+
+          <div className="mt-6 flex flex-wrap items-center gap-3 rounded-xl border border-violet-400/15 bg-violet-400/[0.04] px-4 py-3">
+            <span className="text-[9px] tracking-[0.18em] text-slate-400">
+              {simulationRunning ? "ACTIVE MODE" : "SELECTED MODE"}
+            </span>
+            <span className="text-xs font-semibold text-violet-200">
+              {simulationRunning
+                ? simulationStatus?.mode_label ??
+                  (simulationMode === "balanced_demo"
+                    ? "Balanced Demo"
+                    : "Dataset Replay")
+                : simulationMode === "balanced_demo"
+                  ? "Balanced Demo"
+                  : "Dataset Replay"}
+            </span>
           </div>
 
           {simulationError && (

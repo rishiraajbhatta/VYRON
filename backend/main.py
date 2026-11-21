@@ -5,7 +5,7 @@ import random
 from pathlib import Path
 from datetime import datetime, timezone
 from collections import deque
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -41,7 +41,7 @@ from src.predictor import IoTIntrusionPredictor
 app = FastAPI(
     title="VYRON - IoT Intrusion Detection API",
     description="Machine Learning Based IoT Network Intrusion Detection System",
-    version="1.2.0"
+    version="1.3.0"
 )
 
 
@@ -84,6 +84,24 @@ test_dataset = pd.read_csv(DATASET_PATH)
 print(f"Test dataset loaded: {len(test_dataset)} records")
 
 
+# Separate records by their genuine dataset labels.
+benign_dataset = test_dataset[
+    test_dataset["Target"] == 0
+].reset_index(drop=True)
+
+malicious_dataset = test_dataset[
+    test_dataset["Target"] == 1
+].reset_index(drop=True)
+
+if benign_dataset.empty or malicious_dataset.empty:
+    raise ValueError(
+        "The test dataset must contain both BENIGN and MALICIOUS records."
+    )
+
+print(f"Benign records available: {len(benign_dataset)}")
+print(f"Malicious records available: {len(malicious_dataset)}")
+
+
 # ==================================================
 # SIMULATION STATE
 # ==================================================
@@ -92,6 +110,8 @@ simulation_running = False
 simulation_task = None
 
 simulation_interval = 1.0
+
+simulation_mode = "dataset_replay"
 
 event_counter = 0
 
@@ -111,11 +131,17 @@ class BatchPredictionRequest(BaseModel):
 
 
 class SimulationStartRequest(BaseModel):
+
     interval_seconds: float = Field(
         default=1.0,
         ge=0.25,
         le=30.0
     )
+
+    mode: Literal[
+        "dataset_replay",
+        "balanced_demo"
+    ] = "dataset_replay"
 
 
 # ==================================================
@@ -128,7 +154,7 @@ def root():
     return {
         "message": "VYRON IoT Intrusion Detection API",
         "status": "running",
-        "version": "1.2.0"
+        "version": "1.3.0"
     }
 
 
@@ -290,6 +316,36 @@ def predict_batch(request: BatchPredictionRequest):
 
 
 # ==================================================
+# TRAFFIC RECORD SELECTION
+# ==================================================
+
+def select_traffic_record(mode: str, balanced_turn: int):
+
+    if mode == "balanced_demo":
+
+        # Alternate between genuine benign and malicious records.
+        if balanced_turn % 2 == 0:
+
+            row = benign_dataset.sample(
+                n=1
+            ).iloc[0]
+
+        else:
+
+            row = malicious_dataset.sample(
+                n=1
+            ).iloc[0]
+
+        return row
+
+    # Dataset Replay:
+    # Randomly select from the complete original test dataset.
+    return test_dataset.sample(
+        n=1
+    ).iloc[0]
+
+
+# ==================================================
 # CONTINUOUS TRAFFIC SIMULATION ENGINE
 # ==================================================
 
@@ -298,16 +354,20 @@ async def run_traffic_simulation():
     global simulation_running
     global event_counter
 
+    balanced_turn = 0
+
     print("\n[VYRON] Traffic simulation started.")
+    print(f"[VYRON] Active mode: {simulation_mode}")
 
     try:
 
         while simulation_running:
 
-            # Select a random real dataset record.
-            row = test_dataset.sample(
-                n=1
-            ).iloc[0]
+            # Select a genuine dataset record.
+            row = select_traffic_record(
+                simulation_mode,
+                balanced_turn
+            )
 
             # Extract the 38 model features.
             feature_data = {
@@ -315,7 +375,7 @@ async def run_traffic_simulation():
                 for column in predictor.feature_columns
             }
 
-            # Get the original dataset information.
+            # Obtain original dataset classification.
             actual_target = int(row["Target"])
 
             actual_class = (
@@ -339,7 +399,7 @@ async def run_traffic_simulation():
                 prediction["malicious_probability"]
             )
 
-            # Compare model prediction with dataset label.
+            # Verify prediction against original dataset label.
             matches_dataset = (
                 actual_class == predicted_class
             )
@@ -369,6 +429,14 @@ async def run_traffic_simulation():
 
                 "detection_model": "XGBoost",
 
+                "simulation_mode": simulation_mode,
+
+                "simulation_mode_label": (
+                    "Balanced Demo"
+                    if simulation_mode == "balanced_demo"
+                    else "Dataset Replay"
+                ),
+
                 "sample_source": "CICIoT2023 held-out test dataset"
             }
 
@@ -376,10 +444,13 @@ async def run_traffic_simulation():
 
             print(
                 f"[VYRON] Event #{event_counter} | "
+                f"Mode: {simulation_mode} | "
                 f"Actual: {actual_class} | "
                 f"Predicted: {predicted_class} | "
                 f"Probability: {malicious_probability:.6f}"
             )
+
+            balanced_turn += 1
 
             await asyncio.sleep(
                 simulation_interval
@@ -416,6 +487,7 @@ async def start_simulation(
     global simulation_running
     global simulation_task
     global simulation_interval
+    global simulation_mode
 
     if simulation_running:
 
@@ -423,10 +495,13 @@ async def start_simulation(
             "success": True,
             "message": "Simulation is already running.",
             "running": True,
-            "interval_seconds": simulation_interval
+            "interval_seconds": simulation_interval,
+            "mode": simulation_mode
         }
 
     simulation_interval = request.interval_seconds
+
+    simulation_mode = request.mode
 
     simulation_running = True
 
@@ -438,7 +513,13 @@ async def start_simulation(
         "success": True,
         "message": "Traffic simulation started successfully.",
         "running": True,
-        "interval_seconds": simulation_interval
+        "interval_seconds": simulation_interval,
+        "mode": simulation_mode,
+        "mode_label": (
+            "Balanced Demo"
+            if simulation_mode == "balanced_demo"
+            else "Dataset Replay"
+        )
     }
 
 
@@ -499,7 +580,28 @@ def simulation_status():
 
         "stored_events": len(simulation_events),
 
-        "detection_model": "XGBoost"
+        "detection_model": "XGBoost",
+
+        "mode": simulation_mode,
+
+        "mode_label": (
+            "Balanced Demo"
+            if simulation_mode == "balanced_demo"
+            else "Dataset Replay"
+        ),
+
+        "available_modes": [
+            {
+                "id": "dataset_replay",
+                "name": "Dataset Replay",
+                "description": "Preserves the original dataset class distribution."
+            },
+            {
+                "id": "balanced_demo",
+                "name": "Balanced Demo",
+                "description": "Alternates between genuine benign and malicious dataset records."
+            }
+        ]
     }
 
 
