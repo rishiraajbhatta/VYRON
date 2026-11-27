@@ -33,6 +33,11 @@ sys.path.insert(0, str(ML_ENGINE_DIR))
 
 from src.predictor import IoTIntrusionPredictor
 
+# Virtual IoT Device API
+from backend.virtual_devices.api import (
+    router as virtual_devices_router
+)
+
 
 # ==================================================
 # INITIALIZE APPLICATION
@@ -41,7 +46,7 @@ from src.predictor import IoTIntrusionPredictor
 app = FastAPI(
     title="VYRON - IoT Intrusion Detection API",
     description="Machine Learning Based IoT Network Intrusion Detection System",
-    version="1.3.0"
+    version="1.4.0"
 )
 
 
@@ -59,6 +64,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ==================================================
+# REGISTER VIRTUAL DEVICE ROUTER
+# ==================================================
+
+app.include_router(virtual_devices_router)
 
 
 # ==================================================
@@ -154,7 +166,7 @@ def root():
     return {
         "message": "VYRON IoT Intrusion Detection API",
         "status": "running",
-        "version": "1.3.0"
+        "version": "1.4.0"
     }
 
 
@@ -569,6 +581,7 @@ async def stop_simulation():
 # ==================================================
 
 @app.get("/simulation/status")
+
 def simulation_status():
 
     return {
@@ -610,6 +623,7 @@ def simulation_status():
 # ==================================================
 
 @app.get("/simulation/events")
+
 def get_simulation_events(
     after_id: int = 0,
     limit: int = 100

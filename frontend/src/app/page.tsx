@@ -9,6 +9,7 @@ const navigation = [
   "Home",
   "Overview",
   "Live Analyzer",
+  "Virtual Devices",
   "Threat Intelligence",
   "Analytics",
   "System",
@@ -60,6 +61,52 @@ type SimulationStatus = {
   mode?: SimulationMode;
   mode_label?: string;
   available_modes?: SimulationMode[];
+};
+
+type VirtualDeviceStatus = "online" | "offline" | "simulating";
+
+type VirtualDevice = {
+  device_id: string;
+  name: string;
+  device_type: string;
+  description: string;
+  ip_address: string;
+  status: VirtualDeviceStatus;
+  location: string;
+  created_at: string;
+  last_activity: string | null;
+};
+
+type DeviceAnalysis = {
+  model: string;
+  prediction: SampleType;
+  malicious_probability: number;
+  threshold: number;
+  actual_class: SampleType;
+  original_label: string;
+  matches_dataset: boolean;
+  sample_source: string;
+  analysis_type: string;
+  note: string;
+};
+
+type VirtualDeviceEvent = {
+  event_id: number;
+  device_id: string;
+  device_name: string;
+  device_type: string;
+  activity: string;
+  scenario: string;
+  timestamp: string;
+  status: string;
+  analysis: DeviceAnalysis | null;
+};
+
+type DeviceStatistics = {
+  total_devices: number;
+  online_devices: number;
+  simulating_devices: number;
+  offline_devices: number;
 };
 
 function VyronLogo({ large = false }: { large?: boolean }) {
@@ -291,6 +338,20 @@ export default function Home() {
 
   const [simulationError, setSimulationError] = useState("");
 
+  // Virtual IoT device state
+  const [virtualDevices, setVirtualDevices] = useState<VirtualDevice[]>([]);
+  const [deviceStatistics, setDeviceStatistics] = useState<DeviceStatistics>({
+    total_devices: 0,
+    online_devices: 0,
+    simulating_devices: 0,
+    offline_devices: 0,
+  });
+  const [deviceEvents, setDeviceEvents] = useState<VirtualDeviceEvent[]>([]);
+  const [deviceScenario, setDeviceScenario] = useState<Record<string, string>>({});
+  const [deviceBusyId, setDeviceBusyId] = useState<string | null>(null);
+  const [deviceError, setDeviceError] = useState("");
+  const [deviceMessage, setDeviceMessage] = useState("");
+
   // ==================================================
   // BACKEND HEALTH CHECK
   // ==================================================
@@ -417,6 +478,63 @@ export default function Home() {
   }, [backendStatus]);
 
   // ==================================================
+  // VIRTUAL DEVICE DATA POLLING
+  // ==================================================
+
+  useEffect(() => {
+    if (backendStatus !== "online") return;
+
+    let mounted = true;
+
+    const fetchDeviceData = async () => {
+      try {
+        const [devicesResponse, statusResponse, eventsResponse] =
+          await Promise.all([
+            fetch(`${API_BASE_URL}/devices/`, { cache: "no-store" }),
+            fetch(`${API_BASE_URL}/devices/status`, { cache: "no-store" }),
+            fetch(`${API_BASE_URL}/devices/events?limit=50`, { cache: "no-store" }),
+          ]);
+
+        if (!devicesResponse.ok || !statusResponse.ok || !eventsResponse.ok) {
+          throw new Error("Unable to retrieve virtual device information.");
+        }
+
+        const [devicesResult, statusResult, eventsResult] = await Promise.all([
+          devicesResponse.json(),
+          statusResponse.json(),
+          eventsResponse.json(),
+        ]);
+
+        if (!mounted) return;
+
+        setVirtualDevices(devicesResult.devices ?? []);
+        setDeviceStatistics({
+          total_devices: statusResult.total_devices ?? 0,
+          online_devices: statusResult.online_devices ?? 0,
+          simulating_devices: statusResult.simulating_devices ?? 0,
+          offline_devices: statusResult.offline_devices ?? 0,
+        });
+        setDeviceEvents(eventsResult.events ?? []);
+      } catch (err) {
+        if (!mounted) return;
+        setDeviceError(
+          err instanceof Error
+            ? err.message
+            : "Unable to load virtual device data."
+        );
+      }
+    };
+
+    fetchDeviceData();
+    const interval = setInterval(fetchDeviceData, 5000);
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [backendStatus]);
+
+  // ==================================================
   // NAVIGATION
   // ==================================================
 
@@ -433,6 +551,7 @@ export default function Home() {
       Home: "home",
       Overview: "overview",
       "Live Analyzer": "analyzer",
+      "Virtual Devices": "devices",
       "Threat Intelligence": "threats",
       Analytics: "analytics",
       System: "system",
@@ -633,6 +752,127 @@ export default function Home() {
       );
     } finally {
       setSimulationLoading(false);
+    }
+  };
+
+  // ==================================================
+  // VIRTUAL DEVICE ACTIONS
+  // ==================================================
+
+  const refreshDeviceData = async () => {
+    const [devicesResponse, statusResponse, eventsResponse] = await Promise.all([
+      fetch(`${API_BASE_URL}/devices/`, { cache: "no-store" }),
+      fetch(`${API_BASE_URL}/devices/status`, { cache: "no-store" }),
+      fetch(`${API_BASE_URL}/devices/events?limit=50`, { cache: "no-store" }),
+    ]);
+
+    if (!devicesResponse.ok || !statusResponse.ok || !eventsResponse.ok) {
+      throw new Error("Unable to refresh virtual device data.");
+    }
+
+    const [devicesResult, statusResult, eventsResult] = await Promise.all([
+      devicesResponse.json(),
+      statusResponse.json(),
+      eventsResponse.json(),
+    ]);
+
+    setVirtualDevices(devicesResult.devices ?? []);
+    setDeviceStatistics({
+      total_devices: statusResult.total_devices ?? 0,
+      online_devices: statusResult.online_devices ?? 0,
+      simulating_devices: statusResult.simulating_devices ?? 0,
+      offline_devices: statusResult.offline_devices ?? 0,
+    });
+    setDeviceEvents(eventsResult.events ?? []);
+  };
+
+  const controlVirtualDevice = async (
+    deviceId: string,
+    action: "start" | "stop"
+  ) => {
+    setDeviceBusyId(deviceId);
+    setDeviceError("");
+    setDeviceMessage("");
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/devices/${deviceId}/${action}`,
+        { method: "POST" }
+      );
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.detail || result.message || `Unable to ${action} device.`);
+      }
+
+      setDeviceMessage(result.message || `Device ${action}ed successfully.`);
+      await refreshDeviceData();
+    } catch (err) {
+      setDeviceError(
+        err instanceof Error ? err.message : "Device operation failed."
+      );
+    } finally {
+      setDeviceBusyId(null);
+    }
+  };
+
+  const generateDeviceActivity = async (deviceId: string) => {
+    setDeviceBusyId(deviceId);
+    setDeviceError("");
+    setDeviceMessage("");
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/devices/${deviceId}/simulate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            scenario: deviceScenario[deviceId] || "normal",
+          }),
+        }
+      );
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.detail || result.message || "Unable to generate device activity.");
+      }
+
+      setDeviceMessage(result.message || "Virtual device activity generated.");
+      await refreshDeviceData();
+    } catch (err) {
+      setDeviceError(
+        err instanceof Error ? err.message : "Unable to generate device activity."
+      );
+    } finally {
+      setDeviceBusyId(null);
+    }
+  };
+
+  const analyzeVirtualDevice = async (deviceId: string) => {
+    setDeviceBusyId(deviceId);
+    setDeviceError("");
+    setDeviceMessage("");
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/devices/${deviceId}/analyze`,
+        { method: "POST" }
+      );
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.detail || result.message || "XGBoost analysis failed.");
+      }
+
+      setDeviceMessage("XGBoost analysis completed successfully.");
+      await refreshDeviceData();
+    } catch (err) {
+      setDeviceError(
+        err instanceof Error ? err.message : "Unable to analyze device event."
+      );
+    } finally {
+      setDeviceBusyId(null);
     }
   };
 
@@ -871,6 +1111,286 @@ export default function Home() {
               </p>
             </div>
           ))}
+        </div>
+      </section>
+
+      {/* VIRTUAL IOT DEVICES */}
+
+      <section
+        id="devices"
+        className="relative z-10 border-y border-white/[0.08] bg-[#0d1022]/80"
+      >
+        <div className="mx-auto max-w-[1600px] px-6 py-24 lg:px-16">
+          <SectionLabel>EDGE DEVICE LABORATORY</SectionLabel>
+
+          <div className="mb-12 flex flex-wrap items-end justify-between gap-6">
+            <div>
+              <h2 className="text-4xl font-semibold tracking-tight md:text-6xl">
+                Virtual IoT <span className="text-slate-400">Devices.</span>
+              </h2>
+              <p className="mt-5 max-w-2xl text-sm leading-7 text-slate-300">
+                Operate a simulated IoT environment, generate device activity,
+                and associate each event with an XGBoost inference from the
+                CICIoT2023 held-out test dataset.
+              </p>
+            </div>
+
+            <button
+              onClick={() => {
+                setDeviceError("");
+                refreshDeviceData().catch((err) =>
+                  setDeviceError(err instanceof Error ? err.message : "Refresh failed.")
+                );
+              }}
+              disabled={backendStatus !== "online"}
+              className="rounded-xl border border-violet-300/25 bg-violet-400/[0.07] px-5 py-3 text-[9px] font-semibold tracking-[0.16em] text-violet-200 transition hover:border-violet-300/50 hover:bg-violet-400/[0.12] disabled:opacity-40"
+            >
+              ↻ REFRESH DEVICES
+            </button>
+          </div>
+
+          <div className="mb-8 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {[
+              { label: "REGISTERED DEVICES", value: deviceStatistics.total_devices, tone: "text-white" },
+              { label: "SIMULATING", value: deviceStatistics.simulating_devices, tone: "text-cyan-300" },
+              { label: "ONLINE", value: deviceStatistics.online_devices, tone: "text-emerald-300" },
+              { label: "OFFLINE", value: deviceStatistics.offline_devices, tone: "text-slate-400" },
+            ].map((item) => (
+              <div key={item.label} className="rounded-2xl border border-white/10 bg-white/[0.035] p-5">
+                <p className="text-[9px] tracking-[0.16em] text-slate-500">{item.label}</p>
+                <p className={`mt-3 text-3xl font-semibold ${item.tone}`}>{item.value}</p>
+              </div>
+            ))}
+          </div>
+
+          {deviceError && (
+            <div className="mb-5 rounded-xl border border-red-400/25 bg-red-400/[0.07] p-4 text-xs text-red-200">
+              {deviceError}
+            </div>
+          )}
+          {deviceMessage && (
+            <div className="mb-5 rounded-xl border border-emerald-400/25 bg-emerald-400/[0.07] p-4 text-xs text-emerald-200">
+              {deviceMessage}
+            </div>
+          )}
+
+          {backendStatus !== "online" ? (
+            <div className="rounded-2xl border border-amber-400/20 bg-amber-400/[0.05] p-8 text-sm text-amber-200">
+              Connect the VYRON backend to load and control virtual devices.
+            </div>
+          ) : virtualDevices.length === 0 ? (
+            <div className="rounded-2xl border border-white/10 bg-[#111327]/80 p-8 text-sm text-slate-400">
+              Loading registered virtual devices...
+            </div>
+          ) : (
+            <div className="grid gap-5 xl:grid-cols-2">
+              {virtualDevices.map((device) => {
+                const latestDeviceEvent = deviceEvents.find(
+                  (event) => event.device_id === device.device_id
+                );
+                const isBusy = deviceBusyId === device.device_id;
+                const statusTone =
+                  device.status === "simulating"
+                    ? "border-cyan-400/25 bg-cyan-400/10 text-cyan-300"
+                    : device.status === "online"
+                      ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-300"
+                      : "border-slate-400/20 bg-slate-400/[0.07] text-slate-400";
+                const deviceIcon =
+                  device.device_type === "cctv_camera" ? "◉"
+                    : device.device_type === "door_lock" ? "⌑"
+                      : device.device_type === "temperature_sensor" ? "⌁"
+                        : device.device_type === "smart_light" ? "✧" : "⌘";
+
+                return (
+                  <article
+                    key={device.device_id}
+                    className="group relative overflow-hidden rounded-2xl border border-white/[0.11] bg-gradient-to-br from-[#171a34] via-[#111428] to-[#0c1020] p-6 transition duration-300 hover:-translate-y-1 hover:border-violet-300/30 hover:shadow-[0_20px_70px_rgba(76,29,149,0.14)] md:p-7"
+                  >
+                    <div className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-violet-500/[0.08] blur-3xl transition group-hover:bg-cyan-400/[0.10]" />
+                    <div className="relative">
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div className="flex items-center gap-4">
+                          <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-violet-300/20 bg-violet-400/[0.08] text-2xl text-violet-200">
+                            {deviceIcon}
+                          </div>
+                          <div>
+                            <p className="text-[9px] tracking-[0.16em] text-slate-500">{device.device_id}</p>
+                            <h3 className="mt-1 text-lg font-semibold">{device.name}</h3>
+                            <p className="mt-1 text-[10px] capitalize text-slate-400">
+                              {device.device_type.replaceAll("_", " ")}
+                            </p>
+                          </div>
+                        </div>
+                        <span className={`rounded-full border px-3 py-1.5 text-[8px] font-semibold tracking-[0.14em] ${statusTone}`}>
+                          <span className="mr-2 inline-block h-1.5 w-1.5 rounded-full bg-current" />
+                          {device.status.toUpperCase()}
+                        </span>
+                      </div>
+
+                      <p className="mt-5 min-h-10 text-xs leading-5 text-slate-400">{device.description}</p>
+
+                      <div className="mt-5 grid grid-cols-2 gap-3 rounded-xl border border-white/[0.07] bg-black/15 p-4">
+                        <div>
+                          <p className="text-[8px] tracking-[0.14em] text-slate-500">IP ADDRESS</p>
+                          <p className="mt-2 font-mono text-xs text-cyan-200">{device.ip_address}</p>
+                        </div>
+                        <div>
+                          <p className="text-[8px] tracking-[0.14em] text-slate-500">LOCATION</p>
+                          <p className="mt-2 text-xs text-slate-300">{device.location}</p>
+                        </div>
+                      </div>
+
+                      <div className="mt-5 flex flex-wrap gap-2">
+                        <button
+                          onClick={() => controlVirtualDevice(device.device_id, "start")}
+                          disabled={isBusy || device.status !== "offline" || backendStatus !== "online"}
+                          className="rounded-lg bg-gradient-to-r from-emerald-600 to-teal-500 px-4 py-3 text-[8px] font-semibold tracking-[0.13em] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                          {isBusy ? "WORKING..." : "▶ START DEVICE"}
+                        </button>
+                        <button
+                          onClick={() => controlVirtualDevice(device.device_id, "stop")}
+                          disabled={isBusy || device.status === "offline"}
+                          className="rounded-lg border border-red-400/25 bg-red-400/[0.06] px-4 py-3 text-[8px] font-semibold tracking-[0.13em] text-red-300 transition hover:bg-red-400/[0.12] disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                          ■ STOP
+                        </button>
+                      </div>
+
+                      <div className="mt-6 border-t border-white/[0.08] pt-5">
+                        <p className="text-[9px] font-semibold tracking-[0.16em] text-violet-200">ACTIVITY GENERATOR</p>
+                        <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+                          <select
+                            aria-label={`Activity scenario for ${device.name}`}
+                            value={deviceScenario[device.device_id] || "normal"}
+                            onChange={(event) =>
+                              setDeviceScenario((previous) => ({
+                                ...previous,
+                                [device.device_id]: event.target.value,
+                              }))
+                            }
+                            className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#090d1d] px-3 py-3 text-xs text-white outline-none focus:border-violet-400"
+                          >
+                            <option value="normal">Normal activity</option>
+                            <option value="suspicious">Suspicious activity</option>
+                          </select>
+                          <button
+                            onClick={() => generateDeviceActivity(device.device_id)}
+                            disabled={isBusy || device.status === "offline" || backendStatus !== "online"}
+                            className="rounded-lg border border-cyan-300/25 bg-cyan-300/[0.08] px-4 py-3 text-[8px] font-semibold tracking-[0.12em] text-cyan-200 transition hover:bg-cyan-300/[0.14] disabled:cursor-not-allowed disabled:opacity-35"
+                          >
+                            GENERATE ACTIVITY
+                          </button>
+                        </div>
+                        <button
+                          onClick={() => analyzeVirtualDevice(device.device_id)}
+                          disabled={isBusy || device.status === "offline" || !latestDeviceEvent || backendStatus !== "online"}
+                          className="mt-3 w-full rounded-lg bg-gradient-to-r from-violet-600 to-blue-500 px-4 py-3 text-[9px] font-semibold tracking-[0.15em] shadow-[0_0_25px_rgba(124,58,237,0.13)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                          {isBusy ? "PROCESSING..." : "RUN XGBOOST ANALYSIS →"}
+                        </button>
+                      </div>
+
+                      {latestDeviceEvent && (
+                        <div className="mt-5 rounded-xl border border-white/[0.08] bg-black/20 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-[8px] tracking-[0.15em] text-slate-500">LATEST EVENT · #{latestDeviceEvent.event_id}</span>
+                            <span className={`text-[8px] font-semibold tracking-wider ${latestDeviceEvent.analysis?.prediction === "MALICIOUS" ? "text-red-300" : latestDeviceEvent.analysis?.prediction === "BENIGN" ? "text-emerald-300" : "text-slate-400"}`}>
+                              {latestDeviceEvent.analysis?.prediction || "AWAITING ANALYSIS"}
+                            </span>
+                          </div>
+                          <p className="mt-3 text-xs text-slate-200">{latestDeviceEvent.activity}</p>
+                          {latestDeviceEvent.analysis && (
+                            <div className="mt-4 grid grid-cols-2 gap-3">
+                              <div>
+                                <p className="text-[8px] text-slate-500">MALICIOUS PROBABILITY</p>
+                                <p className="mt-1 font-mono text-sm text-red-200">
+                                  {(latestDeviceEvent.analysis.malicious_probability * 100).toFixed(3)}%
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-[8px] text-slate-500">DATASET LABEL</p>
+                                <p className="mt-1 break-words text-xs text-slate-200">{latestDeviceEvent.analysis.original_label}</p>
+                              </div>
+                              <div className="col-span-2">
+                                <p className={`text-[9px] font-semibold ${latestDeviceEvent.analysis.matches_dataset ? "text-emerald-300" : "text-amber-300"}`}>
+                                  {latestDeviceEvent.analysis.matches_dataset ? "✓ PREDICTION MATCHES DATASET LABEL" : "⚠ PREDICTION DIFFERS FROM DATASET LABEL"}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="mt-8 rounded-2xl border border-amber-300/20 bg-amber-300/[0.045] p-5 md:p-6">
+            <p className="text-[9px] font-semibold tracking-[0.17em] text-amber-200">DEMONSTRATION SCOPE & ML METHODOLOGY</p>
+            <p className="mt-3 text-xs leading-6 text-slate-300">
+              Device identities, IP addresses, and generated activities are simulated. When you run analysis,
+              VYRON selects a separate genuine record from the CICIoT2023 held-out test dataset and sends its
+              38 features to XGBoost. The prediction is attached to the device event for demonstration, but it
+              is not a direct classification of the simulated activity or a real device/network packet.
+            </p>
+          </div>
+
+          <div className="mt-10 overflow-hidden rounded-2xl border border-white/10 bg-[#111327]/90">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 p-6">
+              <div>
+                <p className="text-[9px] tracking-[0.18em] text-cyan-300">DEVICE ACTIVITY LOG</p>
+                <h3 className="mt-2 text-xl font-semibold">Recent Virtual Device Events</h3>
+              </div>
+              <span className="text-[9px] tracking-widest text-slate-500">{deviceEvents.length} EVENTS</span>
+            </div>
+            {deviceEvents.length === 0 ? (
+              <div className="p-10 text-center text-xs text-slate-500">
+                No virtual device activity has been generated yet.
+              </div>
+            ) : (
+              <div className="max-h-[440px] overflow-auto">
+                <table className="w-full min-w-[760px] text-left">
+                  <thead className="sticky top-0 bg-[#17182e]">
+                    <tr className="border-b border-white/10 text-[8px] tracking-widest text-slate-500">
+                      <th className="px-5 py-4 font-normal">EVENT</th>
+                      <th className="px-5 py-4 font-normal">DEVICE</th>
+                      <th className="px-5 py-4 font-normal">ACTIVITY</th>
+                      <th className="px-5 py-4 font-normal">SCENARIO</th>
+                      <th className="px-5 py-4 font-normal">ML RESULT</th>
+                      <th className="px-5 py-4 font-normal">TIME</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deviceEvents.map((event) => (
+                      <tr key={event.event_id} className="border-b border-white/[0.05] hover:bg-white/[0.025]">
+                        <td className="px-5 py-4 font-mono text-xs text-slate-400">#{event.event_id}</td>
+                        <td className="px-5 py-4">
+                          <p className="text-xs text-slate-200">{event.device_name}</p>
+                          <p className="mt-1 font-mono text-[9px] text-slate-500">{event.device_id}</p>
+                        </td>
+                        <td className="max-w-[260px] px-5 py-4 text-xs text-slate-300">{event.activity}</td>
+                        <td className="px-5 py-4 text-[9px] uppercase tracking-wider text-slate-400">{event.scenario}</td>
+                        <td className="px-5 py-4 text-xs">
+                          {event.analysis ? (
+                            <span className={event.analysis.prediction === "MALICIOUS" ? "text-red-300" : "text-emerald-300"}>
+                              {event.analysis.prediction} · {(event.analysis.malicious_probability * 100).toFixed(2)}%
+                            </span>
+                          ) : <span className="text-slate-500">Not analyzed</span>}
+                        </td>
+                        <td className="px-5 py-4 text-[10px] text-slate-400">{new Date(event.timestamp).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="border-t border-white/10 px-6 py-4 text-[9px] text-slate-500">
+              Event records are generated by the VYRON virtual-device simulator; they are not captured network packets.
+            </div>
+          </div>
         </div>
       </section>
 
